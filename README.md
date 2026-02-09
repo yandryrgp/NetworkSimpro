@@ -1,121 +1,201 @@
-# NetworkSimpro (SimproNET)
+# SimproNET
 
-Biblioteca de red para Unity que ofrece un `NetworkManager` con soporte para TCP/UDP, mensajes tipados y un componente listo para usar en GameObjects. Incluye serialización automática de mensajes con IDs y utilidades para integrar en proyectos Unity 2017.1 o superior. 【F:SimproNet/NetworkManager.cs†L1-L175】【F:SimproNet/NetworkService.cs†L1-L120】【F:SimproNet/unity/NetworkComponent_UNITY.cs†L1-L120】【F:SimproNet/Serialization.cs†L90-L160】
+SimproNET es una librería de red ligera en **C# (.NET / Unity)** orientada a simuladores y juegos multijugador **server-authoritative**, con soporte para **TCP y UDP**, mensajes tipados y un modelo de actualización compatible con el ciclo `Update()` de Unity.
 
-## Características
+---
 
-- **Cliente/servidor TCP y UDP** con canales confiables y no confiables (`Reliable` / `Unreliable`).【F:SimproNet/NetworkService.cs†L11-L38】
-- **Eventos de conexión y recepción de datos** para reaccionar a la red desde el manager principal.【F:SimproNet/NetworkManager.cs†L14-L60】
-- **Mensajes tipados** con registro por ID (0-255) y deserialización automática por reflexión.【F:SimproNet/NetworkManager.cs†L31-L107】【F:SimproNet/Serialization.cs†L90-L160】
-- **Componente Unity** que inicializa y actualiza la red automáticamente (`NetworkComponent_UNITY`).【F:SimproNet/unity/NetworkComponent_UNITY.cs†L8-L120】
-- **Mensajes JSON de ejemplo** para comandos de tipo TCP (`TcpMessage`, `MessageTypeTCP`).【F:SimproNet/unity/NetworkComponent_UNITY.cs†L120-L220】
+## 🎯 Objetivos del proyecto
 
-## Estructura del proyecto
+* Comunicación cliente–servidor simple y controlada
+* Arquitectura clara y extensible
+* Bajo acoplamiento con Unity
+* Evitar hilos visibles y lógica compleja
+* Ideal para simuladores, juegos tácticos y proyectos técnicos
+
+---
+
+## 🧱 Arquitectura general
+
+SimproNET está dividida en capas bien definidas:
 
 ```
-/
-├─ SimproNet/                  # Núcleo de la librería
-│  ├─ NetworkManager.cs        # API principal y eventos
-│  ├─ NetworkService.cs        # Implementación TCP/UDP
-│  ├─ Serialization.cs         # Serialización de NetworkData
-│  └─ unity/                   # Integración con Unity
-│     └─ NetworkComponent_UNITY.cs
-└─ Manager_Nerwork.cs          # Ejemplo de uso en escena Unity
+[ NetworkManager ]  ← API pública, eventos, lógica de alto nivel
+        |
+        v
+[ NetworkService ]  ← TCP / UDP, sockets, colas, estados
+        |
+        v
+[ Socket Layer ]    ← Comunicación de bajo nivel
 ```
 
-## Requisitos
+### Componentes principales
 
-- Unity 2017.1 o superior (el código está protegido con `UNITY_2017_1_OR_NEWER`).【F:SimproNet/NetworkManager.cs†L1-L3】【F:SimproNet/unity/NetworkComponent_UNITY.cs†L1-L4】
-- Newtonsoft.Json para serializar mensajes JSON en el ejemplo de Unity.【F:SimproNet/unity/NetworkComponent_UNITY.cs†L1-L4】【F:SimproNet/unity/NetworkComponent_UNITY.cs†L150-L210】
+| Componente       | Responsabilidad                                |
+| ---------------- | ---------------------------------------------- |
+| `NetworkManager` | Gestión de mensajes, eventos y flujo principal |
+| `NetworkService` | Manejo de sockets, conexiones y colas          |
+| `NetworkData`    | Base para mensajes serializables               |
+| `Serialization`  | Serialización / deserialización binaria        |
+| `Events`         | Eventos de conexión y recepción de datos       |
+| `UNITY`          | Adaptación específica para Unity               |
 
-## Uso básico
+---
 
-### 1) Crear el manager y registrar tipos de mensaje
+## 🔁 Modelo de ejecución
 
-```csharp
-var manager = new SimproNET.NetworkManager();
-manager.RegisterNetworkData<NetMessageJson>(1);
+SimproNET utiliza un **modelo pull-based**, pensado para ejecutarse desde el `Update()` de Unity o un loop manual en .NET.
+
+No crea hilos visibles ni callbacks asíncronos complejos.
+
+---
+
+## 🔄 Diagrama de flujo principal
+
+### Ciclo de `NetworkManager.Update()`
+
+```
+┌──────────────────────────┐
+│ NetworkManager.Update()  │
+└─────────────┬────────────┘
+              │
+              v
+   ┌──────────────────────┐
+   │ Leer eventos de red  │
+   │ (connect / disconnect)
+   └─────────────┬────────┘
+                 │
+                 v
+      ┌───────────────────┐
+      │ ¿Estado Running?  │─── NO ──► Fin
+      └─────────┬─────────┘
+                │ SI
+                v
+   ┌────────────────────────┐
+   │ Leer mensajes entrantes │
+   └─────────────┬──────────┘
+                 │
+                 v
+   ┌────────────────────────┐
+   │ Resolver tipo (ID[0])  │
+   └─────────────┬──────────┘
+                 │
+                 v
+   ┌────────────────────────┐
+   │ Deserializar NetworkData│
+   └─────────────┬──────────┘
+                 │
+        ┌────────▼────────┐
+        │ ¿Es Servidor?   │
+        └───────┬─────────┘
+                │ SI
+                v
+   ┌────────────────────────┐
+   │ Broadcast (excepto src)│
+   └─────────────┬──────────┘
+                 │
+                 v
+   ┌────────────────────────┐
+   │ Evento DataReceived    │
+   └────────────────────────┘
 ```
 
-> El registro por ID permite que el primer byte del payload indique el tipo de mensaje y se deserialice automáticamente al recibirlo.【F:SimproNet/NetworkManager.cs†L31-L107】【F:SimproNet/Serialization.cs†L126-L160】
+---
 
-### 2) Iniciar servidor o cliente
+## 📦 Sistema de mensajes
 
-```csharp
-// Servidor
-manager.StartServer(tcpPort, udpPort, maxClients);
+### NetworkData
 
-// Cliente
-manager.StartClient("127.0.0.1", tcpPort, udpPort);
+Todos los mensajes de red deben heredar de `NetworkData`.
+
+Responsabilidades:
+
+* Serializar datos a `byte[]`
+* Deserializar desde `byte[]`
+
+Ejemplo conceptual:
+
+* Byte 0 → ID del mensaje
+* Bytes restantes → payload
+
+Los tipos se registran mediante:
+
+```
+RegisterNetworkData<T>(byte id)
 ```
 
-Las APIs de inicio validan la IP y exponen el estado a través de `State` e `IsServer`.【F:SimproNet/NetworkManager.cs†L31-L85】
+Internamente se usa un array de 256 posiciones para resolución rápida por ID.
 
-### 3) Procesar eventos y mensajes
+---
 
-```csharp
-manager.ClientConnected += (sender, args) => { /* ... */ };
-manager.ClientDisconnected += (sender, args) => { /* ... */ };
-manager.DataReceived += (sender, args) =>
-{
-    // args.Data contiene el NetworkData deserializado
-};
+## 🌐 Modelo cliente–servidor
 
-// En el Update de Unity:
-manager.Update();
+* **Servidor**
+
+  * Recibe mensajes
+  * Procesa lógica
+  * Reenvía información relevante
+
+* **Cliente**
+
+  * Envía inputs o solicitudes
+  * Recibe estados y eventos
+
+El servidor es siempre la autoridad.
+
+---
+
+## 🎮 Integración con Unity
+
+SimproNET detecta automáticamente el entorno Unity mediante directivas de compilación:
+
+```
+#if UNITY_2017_1_OR_NEWER
 ```
 
-`Update()` consume eventos de conexión y mensajes entrantes desde el servicio de red y dispara los eventos adecuados.【F:SimproNet/NetworkManager.cs†L87-L132】
+Ventajas:
 
-### 4) Enviar mensajes
+* El núcleo funciona en .NET puro
+* La capa Unity solo adapta el ciclo de vida
+* Fácil reutilización en herramientas externas o servidores dedicados
 
-```csharp
-manager.Send(connection, ENetChannel.Reliable, networkData);
-manager.Broadcast(ENetChannel.Unreliable, networkData);
-```
+---
 
-Incluye un broadcast que excluye al remitente en modo servidor (`BroadcastExeption`).【F:SimproNet/NetworkManager.cs†L148-L174】
+## ✅ Ventajas
 
-## Integración con Unity (componente)
+* Arquitectura simple y comprensible
+* Fácil de extender
+* Bajo coste de CPU
+* Ideal para simuladores y juegos tácticos
+* Sin dependencias externas pesadas
 
-Agrega `NetworkComponent_UNITY` a un GameObject para inicializar y actualizar el manager automáticamente. El componente:
+---
 
-- Carga configuración local, registra el tipo `NetMessageJson` y engancha eventos de conexión/datos.【F:SimproNet/unity/NetworkComponent_UNITY.cs†L24-L93】
-- Expone `StartServer`, `StartClient` y `SendMsgTest` desde el menú de contexto de Unity.【F:SimproNet/unity/NetworkComponent_UNITY.cs†L53-L83】
-- Llama a `Manager.Update()` en cada frame y a `Manager.Close()` al cerrar la aplicación.【F:SimproNet/unity/NetworkComponent_UNITY.cs†L92-L118】
+## ⚠️ Consideraciones
 
-Ejemplo de escucha en un MonoBehaviour:
+* No incluye seguridad avanzada por defecto
+* El rebroadcast del servidor es automático
+* No implementa predicción ni interpolación
 
-```csharp
-public class Manager_Network : MonoBehaviour
-{
-    private NetworkComponent_UNITY _netManager;
+Estas decisiones son intencionales para mantener el núcleo ligero y controlable.
 
-    private void Awake()
-    {
-        _netManager = gameObject.AddComponent<NetworkComponent_UNITY>();
-        _netManager.ReciveTcpMessage += OnTcpMessage;
-    }
+---
 
-    private void OnTcpMessage(object sender, TcpMessage e)
-    {
-        // Manejar comandos
-    }
-}
-```
+## 📌 Casos de uso recomendados
 
-Ejemplo basado en `Manager_Nerwork.cs` del repositorio.【F:Manager_Nerwork.cs†L1-L45】
+* Simuladores técnicos o militares
+* Juegos multijugador pequeños/medios
+* Prototipos de red
+* IA distribuida
+* Herramientas de entrenamiento
 
-## Mensajes JSON (ejemplo)
+---
 
-`TcpMessage` encapsula un tipo (`MessageTypeTCP`) y un payload JSON, permitiendo serializar y deserializar fácilmente mensajes de control (play/pause/etc.).【F:SimproNet/unity/NetworkComponent_UNITY.cs†L120-L210】
+## 📄 Licencia
 
-```csharp
-var json = TcpMessage.Create(MessageTypeTCP.Play, new { level = 1 });
-var data = new NetMessageJson { Message = json.ToJson() };
-manager.Broadcast(ENetChannel.Reliable, data);
-```
+Definida por el autor del proyecto.
 
-## Cierre de la red
+---
 
-Llama a `Close()` cuando la aplicación finalice para liberar sockets y desconectar clientes correctamente.【F:SimproNet/NetworkManager.cs†L172-L175】
+## ✍️ Autor
+
+SimproNET es un framework de red diseñado para control total del flujo y la lógica, priorizando claridad y extensibilidad sobre automatismos opacos.
